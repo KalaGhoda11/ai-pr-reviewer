@@ -1,0 +1,26 @@
+# Render Blueprint — free-tier deploy of the AI PR Reviewer.
+# Docs: https://render.com/docs/blueprint-spec
+#
+# Secrets (GEMINI_API_KEY, GITHUB_WEBHOOK_SECRET, GITHUB_TOKEN) are NOT set here.
+# Add them in the Render dashboard as environment variables (sync: false below
+# tells Render to prompt for them rather than read from the repo).
+
+services:
+  - type: web
+    name: ai-pr-reviewer
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.10"
+      - key: GEMINI_MODEL
+        value: gemini-2.0-flash
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
