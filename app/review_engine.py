@@ -1,0 +1,132 @@
+"""The review engine: turn a unified diff into structured review findings.
+
+Design notes
+------------
+- The Gemini client is injected (see ``review_diff``'s ``client`` param) so unit
+  tests can pass a fake and never hit the network.
+- The model is asked to return strict JSON matching ``ReviewResult`` so the
+  output is machine-usable (we post each finding as a comment).
+- ``coding_standards`` is injected into the prompt — this is the "RAG-lite"
+  knowledge source that gives org-specific reviews without fine-tuning.
+"""
+
+from __future__ import annotations
+
+import json
+from enum import Enum
+from pathlib import Path
+
+from pydantic import BaseModel, Field
+
+STANDARDS_PATH = Path(__file__).resolve().parent.parent / "standards" / "coding_standards.md"
+
+
+class Severity(str, Enum):
+    info = "info"
+    minor = "minor"
+    major = "major"
+    critical = "critical"
+
+
+class Category(str, Enum):
+    bug = "bug"
+    security = "security"
+    refactor = "refactor"
+    style = "style"
+
+
+class Finding(BaseModel):
+    file: str = Field(description="Path of the file the finding refers to.")
+    line: int | None = Field(default=None, description="1-based line number, if known.")
+    category: Category
+    severity: Severity
+    message: str = Field(description="What is wrong.")
+    suggestion: str = Field(default="", description="How to fix it.")
+
+
+class ReviewResult(BaseModel):
+    summary: str = Field(description="One-paragraph overview of the change.")
+    findings: list[Finding] = Field(default_factory=list)
+
+
+def load_standards(path: Path = STANDARDS_PATH) -> str:
+    """Load the coding-standards doc, returning empty string if absent."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+
+
+def build_prompt(diff: str, standards: str) -> str:
+    """Assemble the review prompt from the diff and the standards doc."""
+    return f"""You are a senior software engineer reviewing a pull request.
+
+Review ONLY the changes in the unified diff below. Focus on:
+- bugs and logic errors
+- security vulnerabilities
+- refactoring opportunities
+- violations of the organization coding standards provided
+
+Organization coding standards:
+---
+{standards or "(none provided)"}
+---
+
+Unified diff to review:
+```diff
+{diff}
+```
+
+Respond with ONLY a JSON object (no markdown fences) matching this schema:
+{{
+  "summary": "one paragraph",
+  "findings": [
+    {{
+      "file": "path/to/file",
+      "line": 42,
+      "category": "bug|security|refactor|style",
+      "severity": "info|minor|major|critical",
+      "message": "what is wrong",
+      "suggestion": "how to fix it"
+    }}
+  ]
+}}
+If the change looks good, return an empty findings list."""
+
+
+def _extract_json(text: str) -> str:
+    """Strip markdown fences / prose so json.loads gets a clean object."""
+    text = text.strip()
+    if text.startswith("```"):
+        # remove leading ```json / ``` and trailing ```
+        text = text.split("```", 2)[1] if "```" in text else text
+        if text.lstrip().startswith("json"):
+            text = text.lstrip()[4:]
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end != -1:
+        return text[start : end + 1]
+    return text
+
+
+def parse_review(raw_text: str) -> ReviewResult:
+    """Parse the model's raw text response into a validated ReviewResult."""
+    cleaned = _extract_json(raw_text)
+    data = json.loads(cleaned)
+    return ReviewResult.model_validate(data)
+
+
+def review_diff(diff: str, client, model: str, standards: str | None = None) -> ReviewResult:
+    """Review a unified diff.
+
+    ``client`` is any object exposing ``models.generate_content(model, contents)``
+    (the google-genai Client shape), injected so tests can mock it.
+    """
+    if not diff.strip():
+        return ReviewResult(summary="Empty diff; nothing to review.", findings=[])
+
+    if standards is None:
+        standards = load_standards()
+
+    prompt = build_prompt(diff, standards)
+    response = client.models.generate_content(model=model, contents=prompt)
+    return parse_review(response.text)
