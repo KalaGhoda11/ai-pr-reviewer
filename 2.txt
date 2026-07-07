@@ -1,0 +1,70 @@
+The MS Software Engineering (MSSE) Capstone Project gives you the opportunity to
+integrate and apply your knowledge of software engineering languages, tools,
+methods, and project management in producing, as part of a team, either:
+a. An AI system (a software system built incorporating the use of AI models and
+using AI engineering techniques) or
+b. Other software system
+Over the course of approximately three and a half months, you will draw on your
+software development or AI engineering expertise, apply appropriate engineering
+methodologies, and use collaborative tools learned throughout the program. This
+culminating experience simulates the role of a professional engineer and prepares you
+for real-world practice.
+Over the course of the Capstone, you will continue to strengthen your skills in software
+project management, software architecture and design, software testing, AI-based
+applications and/or AI model fine-tuning and continuous integration/continuous delivery (CI/CD). You will apply the knowledge and techniques gained throughout your
+MSSE studies in a hands-on, project-based environment. In addition, you will develop
+essential teamwork skills by collaborating within a diverse, high-performing software
+engineering or AI engineering team. Because projects and their requirements vary,
+success will require adaptability, a collaborative mindset, and a willingness to take
+responsibility for your own learning and contributions.
+The experiential approach, commonly known as “learning by doing,” allows you to gain
+experience of working cooperatively and constructively as a part of a software or AI
+engineering team. The application of project management and software engineering
+skills to a valuable development task will allow you to practice and develop real-world
+software or AI engineering capabilities. Quantic faculty have extensive experience
+working in various industry sectors, and/or in consultancy roles and many have
+research experience in specific areas. Faculty will be a valuable resource to call upon if
+guidance is required to help you select and build a valuable software deliverable.
+The software code you develop for your Capstone project will be hosted in a shared
+GitHub repository (with the option to make it public). This serves as a widely accepted
+and practical way to showcase your engineering skills to potential employers and
+other professionals. For this reason, you are encouraged to approach the project with
+diligence and a commitment to excellence - producing high-quality code and an
+outstanding deliverable can provide significant, tangible benefits to your career after
+graduation.
+
+Learning Outcomes
+When completed successfully, this project will enable you to:
+● Work as part of an agile engineering team to analyze, design, develop, test and
+deploy a high-quality software system, or AI application or agent
+● Utilize the appropriate engineering methodology and tools for your project to
+deliver a software system on-time
+● Demonstrate a working deliverable that meets agreed requirements to product
+stakeholders
+● Demonstrate the use of appropriate AI tooling to support software development
+● Utilize appropriate software and AI engineering techniques and technologies
+throughout
+
+Deliverables
+The main deliverable of the MSSE Capstone is a working, high-quality software system
+or AI system meeting its user requirements. To deliver this software system you will be
+expected to have applied appropriate engineering methodologies and collaborative
+tools (such as CI/CD tools), designed your product appropriately and utilized various
+technologies learnt during your studies. While there are some requisite deliverable
+components, there is no mandatory format for the final deliverable. You
+should include in your submission:
+1) An (accessible) link to the software repository (a GitHub repo) containing the
+project’s developed code. The code should be appropriately documented. You
+must share your repository with the GitHub account, quantic-grader.
+2) The repository should include a link to the deployed version of the software or
+AI system (if a Web application).
+3) The repository should include an (accessible) link to an agile task board
+(typically a Trello Scrum Board or other appropriate board) documenting all
+tasks carried out and features delivered
+4) The repository should include a design and testing document listing and
+explaining 1) design and architecture decisions made, including any software
+and architectural patterns used, and 2) details of software testing implemented
+5) A link to a recording of a demonstration/presentation of the working software
+or AI system at the conclusion of the Capstone Project. The deliverable if a Web
+application should be deployed to a free tier hosting environment such as
+Render, Railway etc. or any other of your choice.
