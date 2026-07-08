@@ -13,10 +13,17 @@ Design notes
 from __future__ import annotations
 
 import json
+import logging
+import time
 from enum import Enum
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger(__name__)
+
+# Transient upstream statuses worth retrying (rate limit / overloaded / gateway).
+_RETRYABLE_STATUS = (429, 500, 502, 503, 504)
 
 STANDARDS_PATH = Path(__file__).resolve().parent.parent / "standards" / "coding_standards.md"
 
@@ -35,6 +42,33 @@ class Category(str, Enum):
     style = "style"
 
 
+# LLMs don't always emit our exact enum values, so we normalize common synonyms
+# and fall back to a safe bucket instead of crashing the whole review.
+_CATEGORY_SYNONYMS = {
+    "error-handling": Category.bug,
+    "errorhandling": Category.bug,
+    "logic": Category.bug,
+    "correctness": Category.bug,
+    "vulnerability": Category.security,
+    "security-vulnerability": Category.security,
+    "performance": Category.refactor,
+    "maintainability": Category.refactor,
+    "readability": Category.style,
+    "formatting": Category.style,
+    "convention": Category.style,
+}
+_SEVERITY_SYNONYMS = {
+    "high": Severity.major,
+    "medium": Severity.minor,
+    "moderate": Severity.minor,
+    "low": Severity.minor,
+    "warning": Severity.minor,
+    "blocker": Severity.critical,
+    "note": Severity.info,
+    "nit": Severity.info,
+}
+
+
 class Finding(BaseModel):
     file: str = Field(description="Path of the file the finding refers to.")
     line: int | None = Field(default=None, description="1-based line number, if known.")
@@ -42,6 +76,40 @@ class Finding(BaseModel):
     severity: Severity
     message: str = Field(description="What is wrong.")
     suggestion: str = Field(default="", description="How to fix it.")
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _coerce_category(cls, v):
+        return _coerce_enum(v, Category, _CATEGORY_SYNONYMS, Category.refactor)
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def _coerce_severity(cls, v):
+        return _coerce_enum(v, Severity, _SEVERITY_SYNONYMS, Severity.minor)
+
+    @field_validator("line", mode="before")
+    @classmethod
+    def _coerce_line(cls, v):
+        """Models sometimes send line as a string, a range, or 0/None."""
+        if v in (None, "", 0, "0"):
+            return None
+        try:
+            return int(str(v).split("-")[0].strip())
+        except (ValueError, TypeError):
+            return None
+
+
+def _coerce_enum(value, enum_cls, synonyms, default):
+    """Map a raw model value onto ``enum_cls``, via synonyms, else ``default``."""
+    if isinstance(value, enum_cls):
+        return value
+    if isinstance(value, str):
+        key = value.strip().lower().replace(" ", "-").replace("_", "-")
+        if key in enum_cls._value2member_map_:
+            return key
+        if key in synonyms:
+            return synonyms[key]
+    return default
 
 
 class ReviewResult(BaseModel):
@@ -91,6 +159,12 @@ Respond with ONLY a JSON object (no markdown fences) matching this schema:
     }}
   ]
 }}
+
+Rules:
+- "category" MUST be EXACTLY one of: bug, security, refactor, style. Map any
+  other kind of issue to the closest of these four.
+- "severity" MUST be EXACTLY one of: info, minor, major, critical.
+- "line" must be a single integer or null.
 If the change looks good, return an empty findings list."""
 
 
@@ -145,6 +219,34 @@ def format_comment(result: ReviewResult) -> str:
     return "\n".join(lines)
 
 
+def _status_of(exc: Exception) -> int | None:
+    """Best-effort extraction of an HTTP status code from an SDK exception."""
+    return getattr(exc, "code", None) or getattr(exc, "status_code", None)
+
+
+def _generate_with_retry(client, model: str, prompt: str, *, retries: int = 3,
+                         base_delay: float = 2.0, sleep=time.sleep) -> str:
+    """Call Gemini, retrying transient errors with exponential backoff.
+
+    ``sleep`` is injectable so tests can retry without real delays.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            response = client.models.generate_content(model=model, contents=prompt)
+            return response.text
+        except Exception as exc:  # noqa: BLE001 - inspect status, then decide
+            status = _status_of(exc)
+            if status not in _RETRYABLE_STATUS or attempt == retries - 1:
+                raise
+            last_exc = exc
+            delay = base_delay * (2 ** attempt)
+            logger.warning("Gemini %s on attempt %d/%d; retrying in %.1fs",
+                           status, attempt + 1, retries, delay)
+            sleep(delay)
+    raise last_exc  # pragma: no cover - loop always returns or raises above
+
+
 def review_diff(diff: str, client, model: str, standards: str | None = None) -> ReviewResult:
     """Review a unified diff.
 
@@ -158,5 +260,5 @@ def review_diff(diff: str, client, model: str, standards: str | None = None) -> 
         standards = load_standards()
 
     prompt = build_prompt(diff, standards)
-    response = client.models.generate_content(model=model, contents=prompt)
-    return parse_review(response.text)
+    raw_text = _generate_with_retry(client, model, prompt)
+    return parse_review(raw_text)
