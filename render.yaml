@@ -17,7 +17,7 @@ services:
       - key: PYTHON_VERSION
         value: "3.12.10"
       - key: GEMINI_MODEL
-        value: gemini-2.0-flash
+        value: gemini-2.5-flash
       - key: GEMINI_API_KEY
         sync: false
       - key: GITHUB_WEBHOOK_SECRET
