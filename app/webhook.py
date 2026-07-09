@@ -41,7 +41,7 @@ def process_pull_request(payload: dict) -> None:
     pr_number = pr["number"]
 
     try:
-        diff = fetch_diff(pr["diff_url"], settings.github_token)
+        diff = fetch_diff(pr["url"], settings.github_token)
         client = _get_gemini_client(settings.gemini_api_key)
         result = review_diff(diff, client=client, model=settings.gemini_model,
                              standards=load_standards())
