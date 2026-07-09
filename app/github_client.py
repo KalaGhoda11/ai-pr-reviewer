@@ -26,16 +26,21 @@ def verify_signature(payload_body: bytes, signature_header: str, secret: str) ->
     return hmac.compare_digest(expected, provided)
 
 
-def fetch_diff(diff_url: str, token: str) -> str:
-    """Fetch the unified diff for a PR.
+def fetch_diff(pr_api_url: str, token: str) -> str:
+    """Fetch the unified diff for a PR via the REST API.
 
-    GitHub returns the raw diff when the ``.diff`` URL is requested (or the API
-    URL with the ``diff`` media type). We use the PR's ``diff_url`` directly.
+    ``pr_api_url`` is the PR's API URL (``.../repos/{o}/{r}/pulls/{n}``, the
+    ``url`` field of the webhook payload's ``pull_request``). Requesting it with
+    the ``diff`` media type returns the raw unified diff.
+
+    NOTE: we deliberately do NOT use the payload's ``diff_url``
+    (``github.com/.../pull/N.diff``) — on a PRIVATE repo that host returns 404
+    even with a valid token; the ``api.github.com`` endpoint honors the token.
     """
     headers = {"Accept": "application/vnd.github.v3.diff"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    resp = httpx.get(diff_url, headers=headers, follow_redirects=True, timeout=30)
+    resp = httpx.get(pr_api_url, headers=headers, follow_redirects=True, timeout=30)
     resp.raise_for_status()
     return resp.text
 
