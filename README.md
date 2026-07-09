@@ -7,6 +7,10 @@ the findings back as PR comments.
 
 Built as an MSSE Capstone project: a deployed, tested, CI/CD-backed AI system.
 
+**🌐 Live:** https://ai-pr-reviewer-sxdp.onrender.com &nbsp;·&nbsp; **📋 Board:** [Trello](https://trello.com/b/fHxg2MVA) &nbsp;·&nbsp; **📖 Handoff guide:** [docs/INSTRUCTIONS.md](docs/INSTRUCTIONS.md) &nbsp;·&nbsp; **🏗 Design doc:** [docs/DESIGN.md](docs/DESIGN.md)
+
+See it work: PR #1 in this repo has a real 12-finding review posted by the bot.
+
 ## Architecture (target)
 
 ```
@@ -53,10 +57,12 @@ pytest -q
 ## Deliverables (capstone)
 
 - [x] GitHub repository (this repo)
-- [ ] Deployed live link (Render)
-- [ ] Agile task board (Trello)
-- [ ] Design & testing document (`docs/DESIGN.md`)
+- [x] Deployed live link (Render) — https://ai-pr-reviewer-sxdp.onrender.com
+- [x] Agile task board (Trello) — https://trello.com/b/fHxg2MVA
+- [x] Design & testing document ([docs/DESIGN.md](docs/DESIGN.md))
+- [x] CI/CD pipeline (GitHub Actions)
 - [ ] Demo recording
+- [ ] Share repo with `quantic-grader`
 
 ## Roadmap
 
