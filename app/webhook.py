@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import traceback
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 
@@ -25,11 +24,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 RELEVANT_ACTIONS = {"opened", "synchronize", "reopened"}
-
-# Records the outcome of the most recent review attempt for the /debug/last-run
-# endpoint. Never stores secret VALUES — only whether a token is present.
-# TEMPORARY diagnostic; remove (or auth-gate) before treating this as prod.
-LAST_RUN: dict = {}
 
 
 def _get_gemini_client(api_key: str):
@@ -46,40 +40,26 @@ def process_pull_request(payload: dict) -> None:
     repo_full_name = payload["repository"]["full_name"]
     pr_number = pr["number"]
 
-    info: dict = {
-        "repo": repo_full_name,
-        "pr": pr_number,
-        "github_token_set": bool(settings.github_token),
-        "gemini_key_set": bool(settings.gemini_api_key),
-    }
     stage = "start"
     try:
         stage = "fetch_diff"
         diff = fetch_diff(pr["url"], settings.github_token)
-        info["diff_len"] = len(diff)
 
         stage = "gemini_review"
         client = _get_gemini_client(settings.gemini_api_key)
         result = review_diff(diff, client=client, model=settings.gemini_model,
                              standards=load_standards())
-        info["findings"] = len(result.findings)
 
         stage = "post_comment"
         post_review_comment(repo_full_name, pr_number, format_comment(result),
                             settings.github_token)
 
-        info["status"] = "success"
         logger.info("Reviewed %s#%s: %d finding(s)", repo_full_name, pr_number,
                     len(result.findings))
-    except Exception as exc:  # noqa: BLE001 - record and swallow, don't crash worker
-        info["status"] = "error"
-        info["failed_stage"] = stage
-        info["error"] = f"{type(exc).__name__}: {exc}"[:400]
-        info["traceback"] = traceback.format_exc()[-1200:]
-        logger.exception("Failed to review %s#%s at %s", repo_full_name, pr_number, stage)
-    finally:
-        LAST_RUN.clear()
-        LAST_RUN.update(info)
+    except Exception:  # noqa: BLE001 - log and swallow so the worker doesn't crash
+        # stage tells us where it broke (fetch_diff / gemini_review / post_comment)
+        logger.exception("Failed to review %s#%s at stage=%s",
+                         repo_full_name, pr_number, stage)
 
 
 @router.post("/webhook", tags=["github"])
@@ -108,9 +88,3 @@ async def github_webhook(
 
     background_tasks.add_task(process_pull_request, payload)
     return {"msg": "review queued", "pr": payload["pull_request"]["number"]}
-
-
-@router.get("/debug/last-run", tags=["ops"])
-def debug_last_run() -> dict:
-    """Return the outcome of the most recent review attempt (diagnostics)."""
-    return LAST_RUN or {"status": "no runs yet"}
