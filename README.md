@@ -54,6 +54,40 @@ Visit http://localhost:8000/health and http://localhost:8000/docs
 pytest -q
 ```
 
+## Deploying
+
+### Render (current — free tier)
+Defined by `render.yaml`. Connect the repo as a Blueprint, set the secrets
+(`GEMINI_API_KEY`, `GITHUB_TOKEN`, `GITHUB_WEBHOOK_SECRET`) in the dashboard, and
+it auto-deploys on push to `main`.
+
+### Google Cloud Run (alternative)
+The repo ships a `Dockerfile`, so it runs on Cloud Run (or any container host).
+
+> ⚠️ **Important:** the app returns `200` to GitHub immediately and does the
+> Gemini review in a background task. Cloud Run **throttles CPU after the
+> response is sent**, which would kill that background work — so you must deploy
+> with **`--no-cpu-throttling`** (CPU always allocated) or set `--min-instances=1`.
+> Otherwise the review never posts.
+
+```bash
+gcloud run deploy ai-pr-reviewer \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --no-cpu-throttling \
+  --set-env-vars GEMINI_MODEL=gemini-2.5-flash \
+  --set-env-vars GEMINI_API_KEY=YOUR_KEY \
+  --set-env-vars GITHUB_TOKEN=YOUR_TOKEN \
+  --set-env-vars GITHUB_WEBHOOK_SECRET=YOUR_SECRET
+```
+
+Requires a GCP project with billing enabled (Cloud Run's free tier covers this
+usage). After it deploys, point the GitHub webhook at the new `*.run.app/webhook`
+URL. For real secrets, prefer Google Secret Manager over `--set-env-vars`.
+
+Note: `gemini-2.0-flash` has **zero** free-tier quota — use `gemini-2.5-flash`.
+
 ## Deliverables (capstone)
 
 - [x] GitHub repository (this repo)
