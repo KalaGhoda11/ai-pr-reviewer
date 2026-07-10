@@ -1,0 +1,33 @@
+{
+  "dataset": "ayshajavd/code-security-vulnerability-dataset",
+  "best_model": "lightgbm",
+  "candidates": {
+    "logreg": {
+      "val_macro_f1": 0.4644,
+      "train_secs": 78.3
+    },
+    "lightgbm": {
+      "val_macro_f1": 0.5743,
+      "train_secs": 5260.7
+    }
+  },
+  "test_macro_f1": 0.5809,
+  "classes": [
+    "CWE-119",
+    "CWE-125",
+    "CWE-20",
+    "CWE-200",
+    "CWE-476",
+    "CWE-502",
+    "CWE-787",
+    "CWE-79",
+    "CWE-89",
+    "CWE-94",
+    "safe"
+  ],
+  "test_classification_report": "              precision    recall  f1-score   support\n\n     CWE-119      0.417     0.643     0.506       474\n     CWE-125      0.331     0.608     0.429        97\n      CWE-20      0.432     0.569     0.491       246\n     CWE-200      0.587     0.674     0.627        95\n     CWE-476      0.461     0.707     0.558        99\n     CWE-502      0.667     0.900     0.766        40\n     CWE-787      0.176     0.231     0.199       169\n      CWE-79      0.518     0.630     0.569        46\n      CWE-89      0.586     0.716     0.644        81\n      CWE-94      0.570     0.714     0.634       119\n        safe      0.985     0.946     0.965     15655\n\n    accuracy                          0.917     17121\n   macro avg      0.521     0.667     0.581     17121\nweighted avg      0.937     0.917     0.925     17121\n",
+  "n_train": 23870,
+  "n_val": 17095,
+  "n_test": 17121,
+  "n_features": 50000
+}

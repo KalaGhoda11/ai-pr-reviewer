@@ -1,0 +1,16 @@
+# Dependencies for the standalone ML vulnerability scanner (mlscan).
+# Kept separate from the web app's requirements.txt so the deployed webhook
+# service stays lean — the scanner is a self-contained, offline, no-API tool.
+#
+# Install:  pip install -r requirements-ml.txt
+scikit-learn==1.9.0
+lightgbm==4.6.0
+pandas==3.0.3
+numpy==2.5.1
+scipy==1.18.0
+joblib==1.5.3
+
+# only needed to (re)train, not to run the scanner:
+datasets==5.0.0
+pyarrow==25.0.0
+huggingface_hub==1.23.0
