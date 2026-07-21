@@ -90,14 +90,21 @@ Note: `gemini-2.0-flash` has **zero** free-tier quota — use `gemini-2.5-flash`
 
 ## Bonus: standalone ML vulnerability scanner (`mlscan`)
 
-A second, independent AI component: an **offline machine-learning classifier**
-(no LLM, no API keys) trained on a **real public dataset** of 175k labelled code
-samples. It classifies code into 10 well-known vulnerability classes (SQL
-injection, XSS, code injection, insecure deserialization, buffer overflow, …) or
-`safe`, in milliseconds.
+A second, independent AI component: an **offline hybrid scanner** (no LLM, no API
+keys) combining a **trained ML classifier** with a **deterministic rule engine**.
+Trained on a **real public dataset** of 175k labelled code samples, it classifies
+code into 8 well-known vulnerability classes (SQL injection, XSS, code injection,
+insecure deserialization, out-of-bounds memory, …) or `safe`, in milliseconds.
 
-- **Model:** TF-IDF features → LightGBM (beat Logistic Regression on validation).
-- **Test performance:** 91.7% accuracy, weighted-F1 0.925 on a held-out split.
+- **Model:** TF-IDF + hand-crafted security features → calibrated LinearSVC,
+  picked from 12 candidates on validation (it beat LightGBM *and* trains in 83 s
+  instead of 88 min).
+- **We found the public dataset leaks:** 9.1% of test rows are byte-identical to
+  training rows, so the naive score was largely *memorization*. We de-duplicated
+  the training split and report both numbers honestly.
+- **Fair result** (rows neither model was trained on): macro-F1 **0.4854 vs
+  0.4474** baseline — **+0.038**. All-rows: 93.0% accuracy, weighted-F1 0.926.
+- **Hybrid in practice:** 7/7 planted vulnerabilities caught, 0 false positives.
 - **Full write-up + metrics:** [docs/ML_SCANNER.md](docs/ML_SCANNER.md)
 
 ```bash

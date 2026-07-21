@@ -1,0 +1,30 @@
+{
+  "rule": "predict = argmax_c(log(P[c]) - offset[c]); offsets are additive in log-probability space (equivalently multiplicative priors)",
+  "applied_by": "mlscan.inference.predict_with_offsets",
+  "score_source": "predict_proba",
+  "classes": [
+    "CWE-20",
+    "CWE-200",
+    "CWE-476",
+    "CWE-502",
+    "CWE-79",
+    "CWE-89",
+    "CWE-94",
+    "MEMORY-OOB",
+    "safe"
+  ],
+  "offsets": {
+    "CWE-20": -0.0833,
+    "CWE-200": -0.5833,
+    "CWE-476": 0.4167,
+    "CWE-502": 0.1667,
+    "CWE-79": -0.5833,
+    "CWE-89": -0.0833,
+    "CWE-94": 0.6667,
+    "MEMORY-OOB": -0.0833,
+    "safe": 0.1667
+  },
+  "tuned_on": "validation",
+  "val_macro_f1_argmax": 0.6093,
+  "val_macro_f1_tuned": 0.6317
+}

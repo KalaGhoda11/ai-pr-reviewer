@@ -1,0 +1,282 @@
+{
+  "dataset": "ayshajavd/code-security-vulnerability-dataset",
+  "taxonomy": [
+    "safe",
+    "CWE-89",
+    "CWE-79",
+    "CWE-94",
+    "CWE-502",
+    "CWE-20",
+    "CWE-200",
+    "CWE-476",
+    "MEMORY-OOB"
+  ],
+  "classes_seen": [
+    "CWE-20",
+    "CWE-200",
+    "CWE-476",
+    "CWE-502",
+    "CWE-79",
+    "CWE-89",
+    "CWE-94",
+    "MEMORY-OOB",
+    "safe"
+  ],
+  "config": {
+    "final": true,
+    "max_features_per_block": 20000,
+    "sec_weight": 1.0,
+    "class_weight": "none",
+    "sample": null,
+    "safe_ratio": 4.0,
+    "dedup": true,
+    "skip_lgbm": false,
+    "calibration_cv": 3,
+    "seed": 42
+  },
+  "n_train": 49030,
+  "n_val": 17095,
+  "n_features": 40045,
+  "train_label_counts": {
+    "CWE-20": 1644,
+    "CWE-200": 575,
+    "CWE-476": 779,
+    "CWE-502": 293,
+    "CWE-79": 332,
+    "CWE-89": 497,
+    "CWE-94": 820,
+    "MEMORY-OOB": 4866,
+    "safe": 39224
+  },
+  "vectorize_secs": 343.7,
+  "candidates": [
+    {
+      "family": "linear_svc_cal",
+      "params": {
+        "C": 0.5,
+        "class_weight": null,
+        "calibration_cv": 3
+      },
+      "val_macro_f1": 0.6022,
+      "fit_secs": 37.8
+    },
+    {
+      "family": "linear_svc_cal",
+      "params": {
+        "C": 1.0,
+        "class_weight": null,
+        "calibration_cv": 3
+      },
+      "val_macro_f1": 0.6085,
+      "fit_secs": 60.3
+    },
+    {
+      "family": "linear_svc_cal",
+      "params": {
+        "C": 2.0,
+        "class_weight": null,
+        "calibration_cv": 3
+      },
+      "val_macro_f1": 0.6093,
+      "fit_secs": 83.5
+    },
+    {
+      "family": "logreg",
+      "params": {
+        "C": 1.0,
+        "class_weight": null
+      },
+      "val_macro_f1": 0.5753,
+      "fit_secs": 72.4
+    },
+    {
+      "family": "logreg",
+      "params": {
+        "C": 4.0,
+        "class_weight": null
+      },
+      "val_macro_f1": 0.6013,
+      "fit_secs": 140.7
+    },
+    {
+      "family": "sgd",
+      "params": {
+        "loss": "modified_huber",
+        "alpha": 1e-05,
+        "class_weight": null
+      },
+      "val_macro_f1": 0.5876,
+      "fit_secs": 16.7
+    },
+    {
+      "family": "sgd",
+      "params": {
+        "loss": "modified_huber",
+        "alpha": 0.0001,
+        "class_weight": null
+      },
+      "val_macro_f1": 0.5781,
+      "fit_secs": 10.6
+    },
+    {
+      "family": "sgd_cal",
+      "params": {
+        "loss": "hinge",
+        "alpha": 1e-05,
+        "class_weight": null,
+        "calibration_cv": 3
+      },
+      "val_macro_f1": 0.6011,
+      "fit_secs": 27.5
+    },
+    {
+      "family": "complement_nb",
+      "params": {
+        "alpha": 0.1
+      },
+      "val_macro_f1": 0.4331,
+      "fit_secs": 0.7
+    },
+    {
+      "family": "complement_nb",
+      "params": {
+        "alpha": 0.5
+      },
+      "val_macro_f1": 0.4284,
+      "fit_secs": 0.8
+    },
+    {
+      "family": "complement_nb",
+      "params": {
+        "alpha": 1.0
+      },
+      "val_macro_f1": 0.429,
+      "fit_secs": 0.8
+    },
+    {
+      "family": "lightgbm",
+      "params": {
+        "n_estimators": 200,
+        "num_leaves": 31,
+        "learning_rate": 0.15,
+        "max_bin": 63,
+        "feature_fraction": 0.3,
+        "min_child_samples": 10
+      },
+      "val_macro_f1": 0.1125,
+      "fit_secs": 637.9
+    }
+  ],
+  "best": {
+    "family": "linear_svc_cal",
+    "params": {
+      "C": 2.0,
+      "class_weight": null,
+      "calibration_cv": 3
+    },
+    "val_macro_f1": 0.6093,
+    "fit_secs": 83.5
+  },
+  "thresholds": {
+    "CWE-20": -0.0833,
+    "CWE-200": -0.5833,
+    "CWE-476": 0.4167,
+    "CWE-502": 0.1667,
+    "CWE-79": -0.5833,
+    "CWE-89": -0.0833,
+    "CWE-94": 0.6667,
+    "MEMORY-OOB": -0.0833,
+    "safe": 0.1667
+  },
+  "classes_eval_only": [],
+  "threshold_tuning": {
+    "history": [
+      {
+        "round": 0,
+        "objective": "argmax",
+        "val_macro_f1": 0.6093
+      },
+      {
+        "round": 1,
+        "objective": "per_class_f1",
+        "val_macro_f1": 0.6121
+      },
+      {
+        "round": 2,
+        "objective": "macro_f1",
+        "val_macro_f1": 0.6311
+      },
+      {
+        "round": 3,
+        "objective": "macro_f1",
+        "val_macro_f1": 0.6317
+      }
+    ],
+    "val_macro_f1_argmax": 0.6093,
+    "val_macro_f1_tuned": 0.6317
+  },
+  "decision_rule": {
+    "rule": "predict = argmax_c(log P(c) - offset[c])",
+    "implemented_by": "mlscan.inference.predict_with_offsets",
+    "score_source": "predict_proba",
+    "verified_against_inference": {
+      "checked_rows": 17095,
+      "disagreements": 0,
+      "checked_on": "validation"
+    }
+  },
+  "validation": {
+    "n": 17095,
+    "macro_f1_argmax": 0.6093,
+    "macro_f1": 0.6317,
+    "classification_report": "              precision    recall  f1-score   support\n\n      CWE-20      0.445     0.256     0.325       254\n     CWE-200      0.417     0.353     0.382        85\n     CWE-476      0.552     0.407     0.468        91\n     CWE-502      0.804     0.849     0.826        53\n      CWE-79      0.660     0.648     0.654        54\n      CWE-89      0.817     0.835     0.826        91\n      CWE-94      0.755     0.622     0.682       119\n  MEMORY-OOB      0.555     0.554     0.554       793\n        safe      0.963     0.973     0.968     15555\n\n    accuracy                          0.932     17095\n   macro avg      0.663     0.611     0.632     17095\nweighted avg      0.928     0.932     0.929     17095\n"
+  },
+  "validation_unseen_only": {
+    "n": 15507,
+    "macro_f1_argmax": 0.4892,
+    "macro_f1": 0.5111,
+    "classification_report": "              precision    recall  f1-score   support\n\n      CWE-20      0.321     0.255     0.284        98\n     CWE-200      0.357     0.405     0.380        37\n     CWE-476      0.440     0.393     0.415        56\n     CWE-502      0.632     0.632     0.632        19\n      CWE-79      0.368     0.389     0.378        18\n      CWE-89      0.684     0.722     0.703        18\n      CWE-94      0.594     0.373     0.458        51\n  MEMORY-OOB      0.312     0.462     0.372       292\n        safe      0.981     0.975     0.978     14918\n\n    accuracy                          0.954     15507\n   macro avg      0.521     0.512     0.511     15507\nweighted avg      0.958     0.954     0.956     15507\n"
+  },
+  "final_run_utc": "2026-07-21T16:16:47+00:00",
+  "n_test": 17121,
+  "test_label_counts": {
+    "CWE-20": 246,
+    "CWE-200": 95,
+    "CWE-476": 99,
+    "CWE-502": 40,
+    "CWE-79": 46,
+    "CWE-89": 81,
+    "CWE-94": 119,
+    "MEMORY-OOB": 740,
+    "safe": 15655
+  },
+  "test": {
+    "n": 17121,
+    "macro_f1_argmax": 0.579,
+    "macro_f1": 0.5908,
+    "classification_report": "              precision    recall  f1-score   support\n\n      CWE-20      0.412     0.248     0.310       246\n     CWE-200      0.265     0.137     0.181        95\n     CWE-476      0.522     0.354     0.422        99\n     CWE-502      0.761     0.875     0.814        40\n      CWE-79      0.567     0.739     0.642        46\n      CWE-89      0.680     0.815     0.742        81\n      CWE-94      0.860     0.622     0.722       119\n  MEMORY-OOB      0.518     0.522     0.520       740\n        safe      0.962     0.972     0.967     15655\n\n    accuracy                          0.930     17121\n   macro avg      0.616     0.587     0.591     17121\nweighted avg      0.925     0.930     0.926     17121\n"
+  },
+  "test_unseen_only": {
+    "n": 15564,
+    "macro_f1_argmax": 0.4752,
+    "macro_f1": 0.4854,
+    "classification_report": "              precision    recall  f1-score   support\n\n      CWE-20      0.275     0.222     0.246        99\n     CWE-200      0.114     0.125     0.119        32\n     CWE-476      0.417     0.323     0.364        62\n     CWE-502      0.583     0.778     0.667        18\n      CWE-79      0.500     0.636     0.560        22\n      CWE-89      0.444     0.571     0.500        14\n      CWE-94      0.769     0.508     0.612        59\n  MEMORY-OOB      0.270     0.404     0.324       277\n        safe      0.980     0.974     0.977     14981\n\n    accuracy                          0.951     15564\n   macro avg      0.484     0.505     0.485     15564\nweighted avg      0.957     0.951     0.954     15564\n"
+  },
+  "test_macro_f1": 0.5908,
+  "test_macro_f1_argmax": 0.579,
+  "test_macro_f1_unseen_only": 0.4854,
+  "offset_transfer": {
+    "val_gain": 0.0224,
+    "test_gain": 0.0118,
+    "delta": -0.0106
+  },
+  "baselines": {
+    "committed_11class_legacy": 0.581,
+    "committed_rescored_9class_all_rows": 0.6543,
+    "committed_rescored_9class_unseen_only": 0.4474,
+    "HEADLINE_delta_unseen_vs_unseen": 0.038,
+    "legacy_delta_all_rows": -0.0635,
+    "note": "The ONLY fair comparison is unseen-only vs unseen-only (HEADLINE_delta_unseen_vs_unseen): the v1 baseline was trained on a split containing 9.1% of the test rows verbatim, so its all-rows score carries a ~0.207 memorization premium this de-duplicated model cannot and should not earn. legacy_delta_all_rows is kept only for continuity with previously published figures."
+  },
+  "total_secs": 1505.6
+}
