@@ -7,7 +7,7 @@ the findings back as PR comments.
 
 Built as an MSSE Capstone project: a deployed, tested, CI/CD-backed AI system.
 
-**🌐 Live:** https://ai-pr-reviewer-sxdp.onrender.com &nbsp;·&nbsp; **📋 Board:** [Trello](https://trello.com/b/fHxg2MVA) &nbsp;·&nbsp; **📖 Handoff guide:** [docs/INSTRUCTIONS.md](docs/INSTRUCTIONS.md) &nbsp;·&nbsp; **🏗 Design doc:** [docs/DESIGN.md](docs/DESIGN.md)
+**🌐 Live:** https://ai-pr-reviewer-sxdp.onrender.com &nbsp;·&nbsp; **🎬 Demo:** [video](https://youtu.be/gD7HKuJ4E-g) &nbsp;·&nbsp; **📋 Board:** [Trello](https://trello.com/b/fHxg2MVA) &nbsp;·&nbsp; **📖 Handoff guide:** [docs/INSTRUCTIONS.md](docs/INSTRUCTIONS.md) &nbsp;·&nbsp; **🏗 Design doc:** [docs/DESIGN.md](docs/DESIGN.md)
 
 See it work: PR #1 in this repo has a real 12-finding review posted by the bot.
 
@@ -120,8 +120,8 @@ python -m mlscan --code "def r(x): return eval(x)"
 - [x] Agile task board (Trello) — https://trello.com/b/fHxg2MVA
 - [x] Design & testing document ([docs/DESIGN.md](docs/DESIGN.md))
 - [x] CI/CD pipeline (GitHub Actions)
-- [ ] Demo recording
-- [ ] Share repo with `quantic-grader`
+- [x] Demo recording — https://youtu.be/gD7HKuJ4E-g
+- [x] Repo shared with `quantic-grader` (also public)
 
 ## Roadmap
 
