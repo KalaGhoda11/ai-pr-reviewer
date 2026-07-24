@@ -30,6 +30,9 @@ What it does, in order
 1. Loads the 9-class splits via :func:`mlscan.data.load_splits`, which now also
    de-duplicates TRAIN against validation/test and flags every eval row with
    ``dup_of_train``. The merged ``MEMORY-OOB`` taxonomy is applied there.
+   ``--drop-weak-classes`` (OFF by default) removes a named class from *every*
+   split before anything else runs; see :func:`partition_classes` and the
+   "Reduced taxonomy" section below.
 2. Builds ONE feature matrix — a :class:`~sklearn.pipeline.FeatureUnion` of
    word TF-IDF (1-2), char_wb TF-IDF (3-5) and the dense
    :class:`~mlscan.security_features.SecurityFeatures` block (followed by
@@ -43,7 +46,10 @@ What it does, in order
    on TRAIN only. A bare LinearSVC used to be selectable, and would have made
    :mod:`mlscan.scanner` raise ``AttributeError`` on the first scan.
 4. Calibrates a per-class decision offset for the winner on VALIDATION (see
-   :func:`tune_offsets`), which replaces plain ``argmax`` at inference.
+   :func:`tune_offsets`), which replaces plain ``argmax`` at inference, then
+   estimates how much of that gain actually transfers off the tuning sample
+   (see :func:`offset_transfer_estimate`) and reverts to plain argmax if the
+   held-out estimate is negative.
 5. Verifies that :func:`mlscan.inference.predict_with_offsets` — the function
    the scanner actually calls — reproduces the decisions the metrics are
    computed from, row for row. Every reported number goes through
@@ -56,10 +62,62 @@ What it does, in order
    ``model/vuln_clf_v2.joblib``, ``model/thresholds_v2.json`` and
    ``model/metrics_v2.json``.
 
+The offset search, and what was actually measured
+-------------------------------------------------
+The grid bounds are now ``--offset-max`` (default 6.0) and the resolution is
+``--offset-step`` (default 0.25), so the claim "the grid saturates" is testable
+instead of asserted — every run reports ``saturated_classes`` and refuses to be
+quiet about it. Three things were measured on the shipped v2 artifact and are
+recorded here so they are not re-litigated:
+
+* **Range is not the binding constraint.** Re-tuning from cached validation
+  log-probabilities at ``--offset-max`` 2.0 / 3.0 / 6.0 / 12.0 returns the
+  *bit-identical* offset vector (VAL 0.6317, TEST 0.5908). The shipped offsets
+  have max magnitude 0.667, i.e. an order of magnitude inside the boundary. The
+  default stays at 6.0 (wide enough that a genuinely mis-set prior could move
+  there, and the saturation check will say so if one ever does), but widening it
+  further is a measured no-op that only costs search time.
+* **Resolution IS the binding constraint, in the wrong direction.** Refining
+  ``--offset-step`` from 0.25 to 0.05 raises VALIDATION macro-F1 by +0.005 and
+  *lowers* TEST macro-F1 by -0.010. A finer grid does not find a better
+  correction, it fits validation noise. 0.25 is deliberate; do not lower it
+  without re-measuring on test.
+* **Half the tuned gain is luck.** Split-half resampling of validation (tune on
+  one half, score the other) puts the expected transferred gain at roughly
+  +0.005 macro-F1 with an optimism gap of ~0.027, while the shipped artifact
+  realises +0.0118 on test. That is why :func:`offset_transfer_estimate` runs on
+  every invocation and its numbers are written into the metrics: rare-class
+  validation support here is only ~18-119 rows, so an in-sample offset gain is
+  not evidence of anything on its own.
+
+Reduced taxonomy (``--drop-weak-classes``, default OFF)
+-------------------------------------------------------
+CWE-200 cannot be recovered from a single snippet in this corpus: the model
+scores only ~0.14 recall on CWE-200 test rows it saw *verbatim* in training
+(versus 0.87-0.95 for CWE-89/CWE-502), because the defect is typically a missing
+statement that the snippet does not contain. Dropping it is defensible on that
+evidence — but the resulting macro-F1 is an average over fewer, easier classes,
+and essentially the *whole* apparent gain is that denominator change (measured:
++0.051 from excluding CWE-200 from the average, while every surviving class moves
+by at most +0.014).
+
+So the flag defaults to OFF — the honest full-coverage 9-class number stays the
+default — and when it is on, the run:
+
+* prints a disclosure banner before and after the numbers,
+* records ``weak_class_exclusion`` in the metrics with the excluded classes, the
+  rows removed per split and ``comparable_to_9class: false``,
+* measures the **coverage** that was given up: how many held-out rows of the
+  dropped class the reduced model still flags as *some* vulnerability, and
+* refuses to print the v1 baseline comparison at all, because a 7- or 8-class
+  macro-F1 next to a 9-class one is not a comparison.
+
 Cost note: the linear candidates fit in seconds on this 4-CPU box; the single
 LightGBM config is the only expensive one, hence ``--skip-lgbm``. Calibration
 wrapping multiplies a wrapped candidate's fit cost by roughly two (3 folds on
-2/3 of the rows each).
+2/3 of the rows each). The offset stability estimate re-runs the coordinate
+ascent ``--offset-stability-seeds`` times on half of validation; it is pure numpy
+over a cached score matrix and costs seconds, not minutes.
 """
 
 from __future__ import annotations
@@ -78,6 +136,7 @@ from mlscan.data import SAFE_RATIO as DATA_SAFE_RATIO
 from mlscan.data import SEED as DATA_SEED
 from mlscan.data import Split
 from mlscan.labels import CLASSES
+from mlscan.labels import SAFE as SAFE_CLASS
 
 MODEL_DIR = Path(__file__).resolve().parent / "model"
 # Canonical artifacts. Written by --final ONLY.
@@ -124,11 +183,30 @@ def _honest_baseline() -> dict:
 
 # Per-class decision offsets are searched on this grid, in log-probability
 # space (an additive log offset == a multiplicative prior correction).
-# The range is deliberately wide (+/-6.0 is a ~400x multiplier either way):
-# a narrower grid saturates on the "safe" class, whose prior is the most
-# badly mis-set, and a saturated coordinate silently caps the achievable gain.
-OFFSET_GRID = np.linspace(-6.0, 6.0, 49)
+# The range is deliberately wide — +/-6.0 is a ~400x prior correction either way
+# — so that a badly mis-set class prior CAN move, and every run reports which
+# classes (if any) actually ran into the boundary instead of assuming none did.
+# Measured on the v2 artifact: bounds of 2.0/3.0/6.0/12.0 all return the same
+# offset vector, so the width is currently free headroom, not a live constraint.
+OFFSET_MAX = 6.0
+# Resolution, NOT range, is the variable that matters — and finer is worse:
+# step 0.05 buys +0.005 on validation and loses -0.010 on test (measured on the
+# v2 artifact). 0.25 is a deliberate anti-overfitting choice.
+OFFSET_STEP = 0.25
 OFFSET_ROUNDS = 3  # 1 init pass on per-class F1 + 2 macro-F1 refinement passes
+# Split-half repeats used to estimate how much of the tuned gain transfers off
+# the tuning sample. Cheap (numpy over a cached score matrix) and the only
+# defence against reading an in-sample offset gain as a result.
+OFFSET_STABILITY_SEEDS = 5
+
+# Classes ``--drop-weak-classes`` removes when no explicit list is given.
+# CWE-200 only: the model cannot recover it even from rows it memorized (0.14
+# recall on verbatim-seen test rows), so its absence is an absence of signal in
+# the snippet, not a fixable modelling problem. CWE-20 is deliberately NOT here
+# — it is a mislabelled residual bucket rather than an unlearnable one, its rows
+# are useful negatives, and folding or dropping it was measured to cost more on
+# CWE-89 than it buys.
+DEFAULT_WEAK_CLASSES = ("CWE-200",)
 
 # Folds for the CalibratedClassifierCV wrapper around margin-only estimators.
 CALIBRATION_CV = 3
@@ -424,8 +502,26 @@ def _f1_per_class(y_true: np.ndarray, y_pred: np.ndarray, k: int) -> np.ndarray:
     return np.divide(2 * tp, denom, out=np.zeros(k), where=denom > 0)
 
 
+def make_offset_grid(max_abs: float = OFFSET_MAX,
+                     step: float = OFFSET_STEP) -> np.ndarray:
+    """Symmetric search grid ``[-max_abs, +max_abs]`` in increments of ``step``.
+
+    Built from an integer count rather than ``linspace`` so that 0.0 is always a
+    grid point exactly (the fallback "no correction" must be reachable) and so
+    that the boundary is exactly ``+/-max_abs`` — :func:`tune_offsets` compares
+    against it to decide whether a coordinate saturated.
+    """
+    if max_abs <= 0:
+        raise ValueError(f"--offset-max must be positive, got {max_abs}")
+    if step <= 0 or step > max_abs:
+        raise ValueError(
+            f"--offset-step must be in (0, {max_abs}], got {step}")
+    n = int(round(max_abs / step))
+    return np.round(np.arange(-n, n + 1, dtype=np.float64) * step, 6)
+
+
 def tune_offsets(scores: np.ndarray, y_true_idx: np.ndarray, k: int,
-                 grid: np.ndarray = OFFSET_GRID,
+                 grid: np.ndarray | None = None,
                  rounds: int = OFFSET_ROUNDS) -> tuple[np.ndarray, dict]:
     """Fit one additive decision offset per class by coordinate ascent.
 
@@ -447,12 +543,24 @@ def tune_offsets(scores: np.ndarray, y_true_idx: np.ndarray, k: int,
     numbers readable ("this class is being suppressed / promoted relative to
     the rest") without altering a single prediction.
 
+    A coordinate that comes to rest on the first or last grid point is
+    **saturated**: the search wanted to go further and the grid stopped it, so
+    the reported gain is capped by an arbitrary constant. Those classes are
+    returned in ``info['saturated_classes']`` and the caller prints a warning —
+    the alternative (assuming saturation never happens, or assuming it always
+    does) is how ``OFFSET_MAX`` acquired a folklore justification in the first
+    place.
+
     Must be called with VALIDATION scores only — this is a fitting procedure,
     and fitting it on test is exactly the leak this module now prevents.
     """
+    if grid is None:
+        grid = make_offset_grid()
+    grid = np.asarray(grid, dtype=np.float64)
+    grid_max = float(np.abs(grid).max())
     # Sweep small offsets first so a plateau resolves to the least aggressive
     # correction rather than wherever the grid happened to start.
-    grid = np.asarray(grid)[np.argsort(np.abs(np.asarray(grid)), kind="stable")]
+    grid = grid[np.argsort(np.abs(grid), kind="stable")]
     offsets = np.zeros(k, dtype=np.float64)
     base = _f1_per_class(y_true_idx, np.argmax(scores, axis=1), k)
     best_macro = float(base.mean())
@@ -482,6 +590,12 @@ def tune_offsets(scores: np.ndarray, y_true_idx: np.ndarray, k: int,
             break  # converged; extra rounds buy nothing
         best_macro = max(best_macro, macro)
 
+    # Saturation is measured on the RAW offsets, before mean-centring shifts
+    # them off the grid: hitting the boundary is a property of the search, not
+    # of the readable vector that comes out of it.
+    saturated = [int(c) for c in np.flatnonzero(
+        np.abs(offsets) >= grid_max - 1e-9)]
+
     # Mean-centring is argmax-invariant and makes the vector readable ("this
     # class is suppressed relative to the rest"); rounding here — before the
     # score below is measured — is what keeps reported and shipped identical.
@@ -491,9 +605,126 @@ def tune_offsets(scores: np.ndarray, y_true_idx: np.ndarray, k: int,
     if tuned < base.mean():  # never ship a calibration that hurts validation
         offsets = np.zeros(k, dtype=np.float64)
         tuned = float(base.mean())
+        saturated = []
     return offsets, {"history": history,
                      "val_macro_f1_argmax": round(float(base.mean()), 4),
-                     "val_macro_f1_tuned": round(tuned, 4)}
+                     "val_macro_f1_tuned": round(tuned, 4),
+                     "grid": {"max_abs": round(grid_max, 6),
+                              "step": (round(float(np.diff(np.sort(grid))[0]), 6)
+                                       if grid.size > 1 else 0.0),
+                              "points": int(grid.size)},
+                     "saturated_class_indices": saturated}
+
+
+def offset_transfer_estimate(scores: np.ndarray, y_true_idx: np.ndarray, k: int,
+                             grid: np.ndarray | None = None,
+                             rounds: int = OFFSET_ROUNDS,
+                             seeds: int = OFFSET_STABILITY_SEEDS,
+                             rng_seed: int = SEED) -> dict | None:
+    """Split-half estimate of how much of the offset gain survives transfer.
+
+    The offsets are fitted on validation, and the rare classes have only ~18-119
+    validation rows each. An in-sample gain over that support is not evidence:
+    coordinate ascent over 49 grid points x 9 classes x 3 rounds has plenty of
+    freedom to fit the sample. So this repeatedly tunes on a random HALF of
+    validation and scores the untouched other half, which is the same
+    fit-then-transfer motion the real val -> test hand-off performs, but
+    measurable without spending the one look at test.
+
+    Reports the optimism gap (in-sample minus held-out gain) and the sd of the
+    held-out gain across repeats. A held-out gain that is negative on average
+    means the calibration is fitting validation noise, and
+    :func:`main` then reverts to plain argmax unless ``--no-offset-guard``.
+
+    Returns ``None`` when the estimate would be meaningless (no repeats
+    requested, or too few rows to halve). Pure numpy over an already-computed
+    score matrix — no refitting, so it costs seconds.
+    """
+    n = len(y_true_idx)
+    if seeds <= 0 or n < 200:
+        return None
+    if grid is None:
+        grid = make_offset_grid()
+    rng = np.random.default_rng(rng_seed)
+    in_gains: list[float] = []
+    out_gains: list[float] = []
+    for _ in range(int(seeds)):
+        perm = rng.permutation(n)
+        a, b = perm[: n // 2], perm[n // 2:]
+        offs, _info = tune_offsets(scores[a], y_true_idx[a], k, grid, rounds)
+        for idx, bucket in ((a, in_gains), (b, out_gains)):
+            plain = float(_f1_per_class(
+                y_true_idx[idx], np.argmax(scores[idx], axis=1), k).mean())
+            tuned = float(_f1_per_class(
+                y_true_idx[idx], np.argmax(scores[idx] - offs, axis=1), k).mean())
+            bucket.append(tuned - plain)
+    in_arr, out_arr = np.asarray(in_gains), np.asarray(out_gains)
+    return {
+        "method": "split-half on VALIDATION: tune on one half, score the other",
+        "seeds": int(seeds),
+        "n_per_half": int(n // 2),
+        "in_sample_gain_mean": round(float(in_arr.mean()), 4),
+        "held_out_gain_mean": round(float(out_arr.mean()), 4),
+        "held_out_gain_sd": round(float(out_arr.std(ddof=0)), 4),
+        "optimism": round(float(in_arr.mean() - out_arr.mean()), 4),
+        "note": "held_out_gain_mean is the honest expected effect size of the "
+                "offset calibration; the gain measured on the full validation "
+                "split is in-sample and is optimistic by roughly 'optimism'.",
+    }
+
+
+# ---------------------------------------------------------------------------
+# reduced taxonomy (--drop-weak-classes)
+# ---------------------------------------------------------------------------
+
+def partition_classes(split: Split, drop: set[str]) -> tuple[Split, Split]:
+    """Split into ``(kept, removed)`` by label, preserving ``dup_of_train``.
+
+    The removed rows are not thrown away: they are the only way to measure what
+    dropping a class COSTS. A reduced-taxonomy run scores them to report how many
+    are still flagged as some vulnerability by the surviving classes, which is
+    the coverage number that has to sit next to the improved macro-F1.
+    """
+    keep_idx = [i for i, lbl in enumerate(split.labels) if lbl not in drop]
+    drop_idx = [i for i, lbl in enumerate(split.labels) if lbl in drop]
+
+    def _take(idx: list[int]) -> Split:
+        dup = (None if split.dup_of_train is None
+               else [split.dup_of_train[i] for i in idx])
+        return Split(codes=[split.codes[i] for i in idx],
+                     labels=[split.labels[i] for i in idx], dup_of_train=dup)
+
+    return _take(keep_idx), _take(drop_idx)
+
+
+def coverage_loss(inference, model, features, removed: Split, split_name: str,
+                  offset_map: dict[str, float]) -> dict | None:
+    """What the reduced model does with the rows whose class was removed.
+
+    Those rows are real vulnerabilities that the scanner can no longer NAME. The
+    only remaining question is whether it still flags them at all, so this
+    reports the fraction predicted as something other than ``safe`` — a number
+    that must be published in the same breath as the higher macro-F1, because
+    the macro-F1 gain is almost entirely the smaller denominator.
+    """
+    if not removed.codes:
+        return None
+    preds = inference.predict_with_offsets(
+        model, features.transform(removed.codes), offset_map)
+    flagged = sum(1 for p in preds if str(p) != "safe")
+    counts: dict[str, int] = {}
+    for p in preds:
+        counts[str(p)] = counts.get(str(p), 0) + 1
+    return {
+        "split": split_name,
+        "n_rows": len(preds),
+        "still_flagged_as_some_vulnerability": int(flagged),
+        "fraction_still_flagged": round(flagged / len(preds), 4),
+        "predicted_as": dict(sorted(counts.items(), key=lambda kv: -kv[1])),
+        "note": "these rows carry an excluded class, so the scanner can no "
+                "longer name them; 'fraction_still_flagged' is the share it at "
+                "least still calls vulnerable.",
+    }
 
 
 def evaluate(y_idx: np.ndarray, deployed_idx: np.ndarray, scores: np.ndarray,
@@ -571,6 +802,24 @@ def _dup_mask(split: Split, name: str) -> np.ndarray | None:
     return ~np.asarray(split.dup_of_train, dtype=bool)
 
 
+def _print_reduced_taxonomy_reminder(dropped: list[str], k: int) -> None:
+    """Repeat the disclosure after the numbers, where it will actually be read.
+
+    A banner printed 200 lines above a macro-F1 does not travel with the macro-F1
+    when someone copies it into a report; one printed immediately after it has a
+    chance to.
+    """
+    if not dropped:
+        return
+    print("\n" + "!" * 72, flush=True)
+    print(f"!! The macro-F1 above averages {k} classes, NOT 9: {dropped} were "
+          f"excluded.\n!! It is NOT comparable to any 9-class figure, and the "
+          f"gain from excluding a\n!! class is almost entirely the smaller "
+          f"denominator. Quote it only together\n!! with the coverage_loss block "
+          f"in the metrics JSON.", flush=True)
+    print("!" * 72, flush=True)
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -604,6 +853,38 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--dedup", action=argparse.BooleanOptionalAction, default=True,
                    help="drop TRAIN rows byte-identical to a val/test row "
                         "(default: on; --no-dedup reproduces the leaky splits)")
+    p.add_argument("--offset-max", type=float, default=OFFSET_MAX,
+                   help=f"half-width of the per-class offset search grid, in "
+                        f"log-probability space (default: {OFFSET_MAX}). Every "
+                        f"run reports which classes, if any, saturated it. "
+                        f"Measured on the v2 artifact: 2.0/3.0/6.0/12.0 all "
+                        f"return the identical offset vector, so widening is "
+                        f"free headroom, not a gain.")
+    p.add_argument("--offset-step", type=float, default=OFFSET_STEP,
+                   help=f"offset grid resolution (default: {OFFSET_STEP}). Do "
+                        f"NOT lower this casually: 0.05 measured +0.005 on "
+                        f"validation and -0.010 on TEST -- it fits the tuning "
+                        f"split, it does not find a better correction.")
+    p.add_argument("--offset-stability-seeds", type=int,
+                   default=OFFSET_STABILITY_SEEDS,
+                   help=f"split-half repeats used to estimate how much of the "
+                        f"offset gain transfers off the tuning sample "
+                        f"(default: {OFFSET_STABILITY_SEEDS}; 0 disables)")
+    p.add_argument("--offset-guard", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="revert to plain argmax when the split-half estimate "
+                        "says the offset gain does not transfer (default: on)")
+    p.add_argument("--drop-weak-classes", action="store_true",
+                   help="EXCLUDE weak classes (default: "
+                        f"{','.join(DEFAULT_WEAK_CLASSES)}) from training AND "
+                        "from the reported macro average. OFF by default: the "
+                        "resulting macro-F1 is over fewer, easier classes and "
+                        "is NOT comparable to the 9-class figure, so it is only "
+                        "ever a deliberate, disclosed choice.")
+    p.add_argument("--weak-classes", type=str,
+                   default=",".join(DEFAULT_WEAK_CLASSES),
+                   help="comma-separated classes --drop-weak-classes removes "
+                        f"(default: {','.join(DEFAULT_WEAK_CLASSES)})")
     p.add_argument("--seed", type=int, default=SEED, help="random seed")
     p.add_argument("--offline", action=argparse.BooleanOptionalAction, default=True,
                    help="force HuggingFace offline mode (the dataset is cached locally)")
@@ -612,6 +893,19 @@ def _parse_args(argv=None) -> argparse.Namespace:
         p.error("--final may not be combined with --sample: the one look at the "
                 "test set must use the full training data, not a smoke-sized "
                 "subsample. Run the sampled configuration without --final first.")
+    try:
+        make_offset_grid(args.offset_max, args.offset_step)
+    except ValueError as exc:
+        p.error(str(exc))
+    args.weak_classes = [c.strip() for c in args.weak_classes.split(",") if c.strip()]
+    unknown = [c for c in args.weak_classes if c not in CLASSES]
+    if unknown:
+        p.error(f"--weak-classes names {unknown}, which are not in the taxonomy "
+                f"({CLASSES}).")
+    if SAFE_CLASS in args.weak_classes:
+        p.error(f"--weak-classes may not contain {SAFE_CLASS!r}: dropping the "
+                "negative class would leave a model that can only ever answer "
+                "'vulnerable'.")
     return args
 
 
@@ -651,6 +945,26 @@ def main(argv=None) -> int:
         # Structural, not merely a promise: nothing downstream can reach the
         # test rows because they are no longer in the dict.
         splits.pop("test", None)
+
+    # --- optional reduced taxonomy, OFF by default ------------------------
+    dropped_classes = list(args.weak_classes) if args.drop_weak_classes else []
+    removed_rows: dict[str, Split] = {}
+    if dropped_classes:
+        drop_set = set(dropped_classes)
+        print("\n" + "!" * 72, flush=True)
+        print(f"!! REDUCED TAXONOMY: {dropped_classes} excluded from training "
+              f"and from the\n!! reported macro average. The macro-F1 below is "
+              f"an average over FEWER,\n!! EASIER classes and is NOT comparable "
+              f"to the 9-class figure.", flush=True)
+        print("!" * 72 + "\n", flush=True)
+        for name in list(splits):
+            kept, removed = partition_classes(splits[name], drop_set)
+            splits[name] = kept
+            removed_rows[name] = removed
+            print(f"  {name}: removed {len(removed.codes)} rows "
+                  f"({len(removed.codes) / max(len(removed.codes) + len(kept.codes), 1):.2%} "
+                  f"of the split)", flush=True)
+
     if args.sample:
         splits["train"] = stratified_subsample(splits["train"], args.sample,
                                                args.seed)
@@ -734,14 +1048,65 @@ def main(argv=None) -> int:
           f"(validation macro-F1 = {best['val_macro_f1']:.4f})", flush=True)
 
     # --- per-class threshold calibration, on VALIDATION only --------------
-    print("Calibrating per-class decision offsets on VALIDATION...", flush=True)
+    grid = make_offset_grid(args.offset_max, args.offset_step)
+    print(f"Calibrating per-class decision offsets on VALIDATION "
+          f"(grid +/-{args.offset_max} step {args.offset_step}, "
+          f"{grid.size} points)...", flush=True)
     t0 = time.time()
-    offsets, offset_info = tune_offsets(best_val_scores, yval_idx, k)
+    offsets, offset_info = tune_offsets(best_val_scores, yval_idx, k, grid)
     print(f"  argmax {offset_info['val_macro_f1_argmax']:.4f} -> tuned "
           f"{offset_info['val_macro_f1_tuned']:.4f} ({time.time() - t0:.1f}s)",
           flush=True)
     for c, off in zip(all_classes, offsets):
         print(f"    {c:<12} offset {off:+.2f}", flush=True)
+
+    # Saturation is now measured rather than assumed in a comment. If nothing
+    # reaches the boundary, the grid width is not what limits the gain and
+    # widening it further is wasted search time.
+    saturated = [all_classes[i] for i in offset_info["saturated_class_indices"]]
+    offset_info["saturated_classes"] = saturated
+    if saturated:
+        print(f"  WARNING: {saturated} saturated the +/-{args.offset_max} grid: "
+              f"the search wanted to go further and the bound stopped it. "
+              f"Re-run with a larger --offset-max before trusting these offsets.",
+              flush=True)
+    else:
+        print(f"  no class reached the +/-{args.offset_max} boundary "
+              f"(largest |offset| = {float(np.abs(offsets).max()):.3f}), so the "
+              f"grid width is not the binding constraint here", flush=True)
+
+    # How much of that gain is real? Fitted on ~18-119 rows for the rare
+    # classes, an in-sample gain proves nothing, so measure the transfer.
+    stability = offset_transfer_estimate(best_val_scores, yval_idx, k, grid,
+                                         seeds=args.offset_stability_seeds,
+                                         rng_seed=args.seed)
+    if stability:
+        print(f"  offset gain, split-half over validation ({stability['seeds']} "
+              f"repeats, n={stability['n_per_half']}/half):", flush=True)
+        print(f"    in-sample {stability['in_sample_gain_mean']:+.4f} -> "
+              f"held-out {stability['held_out_gain_mean']:+.4f} "
+              f"(sd {stability['held_out_gain_sd']:.4f}, optimism "
+              f"{stability['optimism']:+.4f})", flush=True)
+        print("    ^ held-out is the honest expected effect size; the full-"
+              "validation gain above is in-sample.", flush=True)
+        if stability["held_out_gain_mean"] < 0:
+            if args.offset_guard:
+                print("  GUARD: the offset calibration does not transfer "
+                      "(held-out gain is negative). Reverting to plain argmax "
+                      "(pass --no-offset-guard to ship it anyway).", flush=True)
+                offsets = np.zeros(k, dtype=np.float64)
+                offset_info["reverted_to_argmax"] = True
+                offset_info["val_macro_f1_tuned"] = \
+                    offset_info["val_macro_f1_argmax"]
+                offset_info["saturated_classes"] = []
+            else:
+                print("  WARNING: the offset calibration does not transfer "
+                      "(held-out gain is negative) and --no-offset-guard is "
+                      "set, so it is being shipped anyway.", flush=True)
+                offset_info["reverted_to_argmax"] = False
+    offset_info["stability"] = stability
+    offset_info["grid"]["configured_max_abs"] = args.offset_max
+    offset_info["grid"]["configured_step"] = args.offset_step
 
     # --- the reported rule IS the deployed rule ---------------------------
     print("Checking mlscan.inference.predict_with_offsets reproduces these "
@@ -761,10 +1126,44 @@ def main(argv=None) -> int:
     val_all = evaluate(yval_idx, val_pred, best_val_scores, all_classes)
     val_unseen_eval = (evaluate(yval_idx, val_pred, best_val_scores, all_classes,
                                 val_unseen) if val_unseen is not None else None)
-    print(f"VALIDATION macro-F1 (tuned) = {val_all['macro_f1']:.4f}", flush=True)
+    print(f"VALIDATION macro-F1 (tuned) = {val_all['macro_f1']:.4f}"
+          f"  [macro over {k} classes]", flush=True)
     if val_unseen_eval:
         print(f"VALIDATION macro-F1 (tuned, unseen-only, n={val_unseen_eval['n']}) "
               f"= {val_unseen_eval['macro_f1']:.4f}", flush=True)
+
+    # --- what the reduced taxonomy cost, measured ---------------------------
+    weak_exclusion = {
+        "enabled": bool(dropped_classes),
+        "excluded_classes": dropped_classes,
+        "n_classes_in_macro": k,
+        "comparable_to_9class": not dropped_classes,
+    }
+    if dropped_classes:
+        weak_exclusion["rows_removed"] = {
+            name: len(s.codes) for name, s in removed_rows.items()}
+        weak_exclusion["coverage_loss"] = {}
+        cov = coverage_loss(inference, best_model, features,
+                            removed_rows.get("validation", Split([], [])),
+                            "validation", threshold_map)
+        if cov:
+            weak_exclusion["coverage_loss"]["validation"] = cov
+            print(f"  coverage given up on VALIDATION: {cov['n_rows']} rows of "
+                  f"{dropped_classes} can no longer be named; "
+                  f"{cov['fraction_still_flagged']:.1%} are still flagged as "
+                  f"some vulnerability", flush=True)
+        weak_exclusion["note"] = (
+            f"macro-F1 here is averaged over {k} classes, not 9. Excluding a "
+            f"class raises the macro average almost entirely through the "
+            f"DENOMINATOR — measured on the v2 artifact, dropping CWE-200 moved "
+            f"macro-F1 +0.0513 while no surviving class gained more than "
+            f"+0.0135. This number must NOT be reported next to, or as an "
+            f"improvement on, the 9-class figure, and the coverage_loss block "
+            f"must be quoted with it.")
+    else:
+        weak_exclusion["note"] = (
+            "full 9-class coverage (default). No class was excluded from "
+            "training or from the macro average.")
 
     common = {
         "dataset": "ayshajavd/code-security-vulnerability-dataset",
@@ -781,6 +1180,11 @@ def main(argv=None) -> int:
             "skip_lgbm": args.skip_lgbm,
             "calibration_cv": cal_cv,
             "seed": args.seed,
+            "offset_max": args.offset_max,
+            "offset_step": args.offset_step,
+            "offset_stability_seeds": args.offset_stability_seeds,
+            "offset_guard": args.offset_guard,
+            "drop_weak_classes": bool(dropped_classes),
         },
         "n_train": len(ytr), "n_val": len(yval),
         "n_features": int(Xtr.shape[1]),
@@ -791,6 +1195,7 @@ def main(argv=None) -> int:
         "thresholds": threshold_map,
         "classes_eval_only": eval_only,
         "threshold_tuning": offset_info,
+        "weak_class_exclusion": weak_exclusion,
         "decision_rule": {
             "rule": "predict = argmax_c(log P(c) - offset[c])",
             "implemented_by": "mlscan.inference.predict_with_offsets",
@@ -812,6 +1217,7 @@ def main(argv=None) -> int:
         print(f"\nSaved dev metrics -> {METRICS_DEV_PATH}", flush=True)
         print(f"v2 artifacts untouched ({MODEL_PATH.name}, "
               f"{THRESHOLDS_PATH.name}, {METRICS_PATH.name})", flush=True)
+        _print_reduced_taxonomy_reminder(dropped_classes, k)
         print(f"Done in {time.time() - t_start:.1f}s", flush=True)
         return 0
 
@@ -831,7 +1237,8 @@ def main(argv=None) -> int:
     print("\n--- TEST, all rows ---", flush=True)
     print(test_all["classification_report"], flush=True)
     print(f"test_macro_f1             = {test_all['macro_f1']:.4f} "
-          f"(argmax {test_all['macro_f1_argmax']:.4f}, n={test_all['n']})", flush=True)
+          f"(argmax {test_all['macro_f1_argmax']:.4f}, n={test_all['n']}, "
+          f"macro over {k} classes)", flush=True)
 
     if test_unseen:
         n_dup = test_all["n"] - test_unseen["n"]
@@ -860,22 +1267,52 @@ def main(argv=None) -> int:
         print(f"                                  test unseen-only {unseen_gain:+.4f}",
               flush=True)
 
+    # What the reduced taxonomy cost on the held-out split, measured on the
+    # rows it can no longer name. This has to be printed BEFORE the macro-F1 is
+    # allowed anywhere near a comparison.
+    if dropped_classes:
+        cov_test = coverage_loss(inference, best_model, features,
+                                 removed_rows.get("test", Split([], [])),
+                                 "test", threshold_map)
+        if cov_test:
+            weak_exclusion.setdefault("coverage_loss", {})["test"] = cov_test
+            total_test = cov_test["n_rows"] + test_all["n"]
+            print(f"\n--- COVERAGE GIVEN UP by excluding {dropped_classes} ---",
+                  flush=True)
+            print(f"  {cov_test['n_rows']} TEST rows "
+                  f"({cov_test['n_rows'] / max(total_test, 1):.1%} of the split) "
+                  f"are real vulnerabilities the scanner can no longer name.",
+                  flush=True)
+            print(f"  Of those, {cov_test['still_flagged_as_some_vulnerability']} "
+                  f"({cov_test['fraction_still_flagged']:.1%}) are still flagged "
+                  f"as some vulnerability; the rest are called safe.", flush=True)
+
     base = _honest_baseline()
-    print(f"\n=== COMPARISON vs committed v1 baseline (source: {base['source']}) ===",
-          flush=True)
-    if test_unseen:
-        headline = test_unseen["macro_f1"] - base["unseen"]
-        print(f"  HEADLINE (fair, unseen-only vs unseen-only):", flush=True)
-        print(f"    new {test_unseen['macro_f1']:.4f}  vs  baseline "
-              f"{base['unseen']:.4f}   ->  {headline:+.4f}", flush=True)
-        print("    ^ the only apples-to-apples number: rows NEITHER model was "
-              "fitted on.", flush=True)
-    print(f"  legacy/all-rows (NOT a fair bar - the baseline's 'all rows' score "
-          f"is inflated by\n    memorized duplicates it was trained on): new "
-          f"{test_all['macro_f1']:.4f} vs {base['all']:.4f}"
-          f" -> {test_all['macro_f1'] - base['all']:+.4f}", flush=True)
-    print(f"  (11-class legacy figure {BASELINE_11CLASS_MACRO_F1:.4f} is a "
-          f"different taxonomy; not comparable.)", flush=True)
+    if dropped_classes:
+        print(f"\n=== NO BASELINE COMPARISON (reduced taxonomy) ===", flush=True)
+        print(f"  {dropped_classes} were excluded, so this macro-F1 is an "
+              f"average over {k} classes.\n  The committed baselines "
+              f"({base['all']:.4f} all-rows, {base['unseen']:.4f} unseen-only) "
+              f"are 9-class\n  numbers. Subtracting them would report a "
+              f"denominator change as a modelling gain,\n  which is the single "
+              f"most misleading thing this harness could print. Re-run without\n"
+              f"  --drop-weak-classes for a comparable figure.", flush=True)
+    else:
+        print(f"\n=== COMPARISON vs committed v1 baseline (source: "
+              f"{base['source']}) ===", flush=True)
+        if test_unseen:
+            headline = test_unseen["macro_f1"] - base["unseen"]
+            print(f"  HEADLINE (fair, unseen-only vs unseen-only):", flush=True)
+            print(f"    new {test_unseen['macro_f1']:.4f}  vs  baseline "
+                  f"{base['unseen']:.4f}   ->  {headline:+.4f}", flush=True)
+            print("    ^ the only apples-to-apples number: rows NEITHER model was "
+                  "fitted on.", flush=True)
+        print(f"  legacy/all-rows (NOT a fair bar - the baseline's 'all rows' "
+              f"score is inflated by\n    memorized duplicates it was trained "
+              f"on): new {test_all['macro_f1']:.4f} vs {base['all']:.4f}"
+              f" -> {test_all['macro_f1'] - base['all']:+.4f}", flush=True)
+        print(f"  (11-class legacy figure {BASELINE_11CLASS_MACRO_F1:.4f} is a "
+              f"different taxonomy; not comparable.)", flush=True)
 
     # --- artifacts ---------------------------------------------------------
     if not hasattr(best_model, "predict_proba"):  # unreachable; cheap to assert
@@ -900,6 +1337,10 @@ def main(argv=None) -> int:
         "classes": all_classes,
         "offsets": threshold_map,
         "tuned_on": "validation",
+        "search_grid": offset_info["grid"],
+        "saturated_classes": offset_info["saturated_classes"],
+        "transfer_estimate": offset_info["stability"],
+        "excluded_classes": dropped_classes,
         **{key: offset_info[key] for key in
            ("val_macro_f1_argmax", "val_macro_f1_tuned")},
     }, indent=2), encoding="utf-8")
@@ -916,12 +1357,37 @@ def main(argv=None) -> int:
         "test_macro_f1": test_all["macro_f1"],
         "test_macro_f1_argmax": test_all["macro_f1_argmax"],
         "test_macro_f1_unseen_only": test_unseen["macro_f1"] if test_unseen else None,
+        "macro_f1_over_n_classes": k,
         "offset_transfer": {
             "val_gain": round(val_gain, 4),
             "test_gain": round(test_gain, 4),
             "delta": round(test_gain - val_gain, 4),
+            "split_half_expected_gain": (
+                offset_info["stability"]["held_out_gain_mean"]
+                if offset_info.get("stability") else None),
+            "note": "val_gain is in-sample (the offsets were fitted on that "
+                    "split). split_half_expected_gain is the honest expected "
+                    "effect size, estimated on validation alone; report that, "
+                    "not val_gain, as 'what the calibration buys'.",
         },
-        "baselines": {
+        "baselines": ({
+            "comparable": False,
+            "excluded_classes": dropped_classes,
+            "committed_11class_legacy": BASELINE_11CLASS_MACRO_F1,
+            "committed_rescored_9class_all_rows": _honest_baseline()["all"],
+            "committed_rescored_9class_unseen_only": _honest_baseline()["unseen"],
+            "HEADLINE_delta_unseen_vs_unseen": None,
+            "legacy_delta_all_rows": None,
+            "note": f"NO DELTA IS REPORTED. {dropped_classes} were excluded, so "
+                    f"this run's macro-F1 averages {k} classes while every "
+                    f"committed baseline averages 9. Subtracting them would "
+                    f"present a denominator change as a modelling gain — "
+                    f"measured on the v2 artifact, excluding CWE-200 alone moves "
+                    f"macro-F1 +0.0513 while no surviving class gains more than "
+                    f"+0.0135. Quote weak_class_exclusion.coverage_loss "
+                    f"alongside any figure from this run.",
+        } if dropped_classes else {
+            "comparable": True,
             "committed_11class_legacy": BASELINE_11CLASS_MACRO_F1,
             "committed_rescored_9class_all_rows": _honest_baseline()["all"],
             "committed_rescored_9class_unseen_only": _honest_baseline()["unseen"],
@@ -937,10 +1403,11 @@ def main(argv=None) -> int:
                     "memorization premium this de-duplicated model cannot and "
                     "should not earn. legacy_delta_all_rows is kept only for "
                     "continuity with previously published figures.",
-        },
+        }),
         "total_secs": round(time.time() - t_start, 1),
     }, indent=2), encoding="utf-8")
     print(f"Saved metrics    -> {METRICS_PATH}", flush=True)
+    _print_reduced_taxonomy_reminder(dropped_classes, k)
     print(f"Done in {time.time() - t_start:.1f}s", flush=True)
     return 0
 

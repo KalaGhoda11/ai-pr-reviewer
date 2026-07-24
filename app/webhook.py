@@ -3,10 +3,15 @@
 Flow:
     1. Verify the HMAC signature (401 if invalid).
     2. Ignore anything that isn't a PR opened/synchronize/reopened event.
-    3. Fetch the diff, review it with Gemini, post the formatted comment.
+    3. Fetch the diff, scan it with the deterministic rules, review it with
+       Gemini, merge the two sets of findings, post one formatted comment.
 
 The review is offloaded to a background task so GitHub gets a fast 202 and does
 not time out or retry while Gemini is thinking.
+
+The static scan runs FIRST but is strictly optional: it has its own stage and
+its own except clause, and every failure path yields an empty finding list. The
+Gemini review and the comment post are unchanged whether it works or not.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 from app.config import get_settings
 from app.github_client import fetch_diff, post_review_comment, verify_signature
 from app.review_engine import format_comment, load_standards, review_diff
+from app.security_scan import known_issues_block, merge_findings, scan_diff
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -45,17 +51,32 @@ def process_pull_request(payload: dict) -> None:
         stage = "fetch_diff"
         diff = fetch_diff(pr["url"], settings.github_token)
 
+        # Optional, deterministic, and isolated: scan_diff already swallows its
+        # own errors, and this except is the belt to that pair of braces.
+        stage = "static_scan"
+        try:
+            rule_findings = scan_diff(diff)
+        except Exception:  # noqa: BLE001 - never let the scan cost us a review
+            logger.exception("Static scan failed for %s#%s; continuing Gemini-only",
+                             repo_full_name, pr_number)
+            rule_findings = []
+
         stage = "gemini_review"
         client = _get_gemini_client(settings.gemini_api_key)
         result = review_diff(diff, client=client, model=settings.gemini_model,
-                             standards=load_standards())
+                             standards=load_standards(),
+                             known_issues=known_issues_block(rule_findings))
+
+        stage = "merge_findings"
+        result.findings = merge_findings(rule_findings, result.findings)
 
         stage = "post_comment"
         post_review_comment(repo_full_name, pr_number, format_comment(result),
                             settings.github_token)
 
-        logger.info("Reviewed %s#%s: %d finding(s)", repo_full_name, pr_number,
-                    len(result.findings))
+        logger.info("Reviewed %s#%s: %d finding(s) (%d from static rules)",
+                    repo_full_name, pr_number, len(result.findings),
+                    len(rule_findings))
     except Exception:  # noqa: BLE001 - log and swallow so the worker doesn't crash
         # stage tells us where it broke (fetch_diff / gemini_review / post_comment)
         logger.exception("Failed to review %s#%s at stage=%s",

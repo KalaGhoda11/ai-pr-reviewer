@@ -97,21 +97,40 @@ code into 8 well-known vulnerability classes (SQL injection, XSS, code injection
 insecure deserialization, out-of-bounds memory, …) or `safe`, in milliseconds.
 
 - **Model:** TF-IDF + hand-crafted security features → calibrated LinearSVC,
-  picked from 12 candidates on validation (it beat LightGBM *and* trains in 83 s
-  instead of 88 min).
+  picked from 12 candidates on validation macro-F1 (0.6093; it beat the LightGBM
+  in the same bake-off, 0.1125) and fits in **83 s** — the previously-shipped v1
+  LightGBM took **88 min**. Those are two different LightGBM runs, and v1's own
+  score is an 11-class figure that is *not* directly comparable; see
+  [docs/ML_SCANNER.md §3.1](docs/ML_SCANNER.md).
 - **We found the public dataset leaks:** 9.1% of test rows are byte-identical to
   training rows, so the naive score was largely *memorization*. We de-duplicated
   the training split and report both numbers honestly.
 - **Fair result** (rows neither model was trained on): macro-F1 **0.4854 vs
-  0.4474** baseline — **+0.038**. All-rows: 93.0% accuracy, weighted-F1 0.926.
-- **Hybrid in practice:** 7/7 planted vulnerabilities caught, 0 false positives.
+  0.4474** baseline — **+0.038**. That +0.038 on the unseen slice is the only
+  apples-to-apples comparison. All-rows: macro-F1 0.5908, 93.0% accuracy,
+  weighted-F1 0.926.
+- **The hybrid is *not* strictly better, and we report that.** Benchmarked over
+  the whole 17,121-row test split, bolting the rules onto the model buys recall
+  and pays for it in precision: on the unseen slice recall rises 0.412 → 0.437
+  while precision falls 0.421 → 0.361, for a **lower** F1 (0.416 → 0.396). Use
+  the hybrid when a miss costs more than a false alarm; otherwise use the model.
+- **The rules still earn their place** — they are deterministic, auditable, and
+  quiet: on the 14,197 real C functions the corpus labels safe they fire on
+  **0.36%** of rows, versus **1.51%** for the model. That is why the *rule half
+  only* is what ships inside the live PR reviewer (`app/security_scan.py`).
+- **Retracted:** an earlier version of this section claimed "7/7 planted
+  vulnerabilities caught, 0 false positives". That came from a hand-picked
+  snippet table, not a benchmark — measured rule recall on the corpus is 0.089
+  (unseen). The numbers above replace it.
 - **Full write-up + metrics:** [docs/ML_SCANNER.md](docs/ML_SCANNER.md)
 
 ```bash
 pip install -r requirements-ml.txt
 python -m mlscan --code "def r(x): return eval(x)"
-#  [!] 1 potential vulnerability: CWE-94 Code Injection (92% confidence)
+#  [!] <--code>: 1 potential vulnerability(ies):
+#    - CWE-94  Code Injection  (95% confidence)
 ```
+(That 95% is a rule engine's hardcoded constant, not a calibrated probability.)
 
 ## Deliverables (capstone)
 
