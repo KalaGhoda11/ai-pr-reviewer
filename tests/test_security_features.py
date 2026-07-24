@@ -5,9 +5,12 @@ asserts that a specific snippet lights up the intended column AND that the
 paired "safe" snippet does not — that contrast is the whole point of the block.
 """
 
-import numpy as np
 import pytest
 
+# Skip guards MUST come before any third-party import: the web-app CI job only
+# installs requirements.txt (no ML extras), and a module-level `import numpy`
+# there fails at COLLECTION time, which errors the whole run instead of skipping.
+np = pytest.importorskip("numpy")
 pytest.importorskip("sklearn")
 pytest.importorskip("scipy")
 
